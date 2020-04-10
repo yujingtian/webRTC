@@ -16,10 +16,14 @@ export default {
     data(){
         return{
             buffer:[],
-            mediaRecorder:null
+            mediaRecorder:null,
+            roomid:10
         }
     },
     mounted(){
+        let _this = this
+        let socket = io.connect("http://localhost:3302");
+        socket.emit('join', _this.roomid);
         this.initVideo()
     },
     methods:{
