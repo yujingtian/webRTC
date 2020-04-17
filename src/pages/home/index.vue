@@ -2,11 +2,11 @@
     <div id="Home">
         <video ref="video" autoplay playsinline></video>
         <div class="btnGroup">
-            <button type="button" @click="photoClick">拍照</button>
+            <!-- <button type="button" @click="photoClick">拍照</button>
             <button type="button" @click="save(2)">保存</button>
             <button type="button" @click="photoRecording">录制</button>
             <button type="button" @click="playRecord">播放</button>
-            <button type="button" @click="stopRecord">暂停</button>
+            <button type="button" @click="stopRecord">暂停</button> -->
         </div>
         <canvas  ref="canvas" id="canvas"></canvas>
     </div>
@@ -17,14 +17,16 @@ export default {
         return{
             buffer:[],
             mediaRecorder:null,
-            roomid:10
+            roomid:10,
+            localStream:null,
+            socket:null,
+            pc:null,
+            remoteStream:null,
         }
     },
     mounted(){
-        let _this = this
-        let socket = io.connect("http://localhost:3302");
-        socket.emit('join', _this.roomid);
-        this.initVideo()
+        // this.initVideo()
+        this.socketConn()
     },
     methods:{
         initVideo(){
@@ -38,23 +40,141 @@ export default {
             // })
             _this.$refs.canvas.width = _this.$refs.video.clientWidth
             _this.$refs.canvas.height = _this.$refs.video.clientHeight
-            var videoPlay = document.querySelector("video")
             if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
                 console.log("getUserMedia is not supported")
             }
             else{
                 var constrants = {
-                    video:{facingMode: "environment"}
+                    video:{facingMode: "face"}
                 }
                 navigator.mediaDevices.getUserMedia(constrants)
                 .then(function (stream){
-                    window.stream = stream
-                    videoPlay.srcObject = stream
+                    _this.localStream = stream
+                    _this.socketConn()  
                 })
                 .catch(function(err){
                     console.log("getUser:",err)
                 })
             }
+        },
+        socketConn(){
+            let _this = this
+            _this.socket = io.connect("https://192.168.27.158:3303");
+            _this.socket.on("joined",function(room, id){
+                  _this.createPeerConnection();
+                  _this.bindTracks()
+            })
+            _this.socket.on("message",function(room, data){
+                if(data == null || data === undefined){
+                    console.log("this message is invalid")
+                    return
+                }
+                if(data.hasOwnProperty('type') && data.type === 'offer'){
+                    _this.pc.setRemoteDescription(new RTCSessionDescription(data))
+                    _this.pc.createAnswer()
+                    .then(getAnswer)
+                    .catch(_this.handleOfferError)
+                }
+                else if(data.hasOwnProperty('type') && data.type == 'answer'){
+                    _this.pc.setRemoteDescription(new RTCSessionDescription(data))
+                }
+                else if(data.hasOwnProperty('type') && data.type == 'candidate'){
+                    let candidate = new RTCIceCandidate({
+                        sdpMLineIndex: data.label,
+                        candidate: data.candidate
+                    });
+                    _this.pc.addIceCandidate(candidate);
+                }
+                else{
+                    console.log("this message is invalid")  
+                }
+            })
+            _this.socket.on("otherjoin",function(room){
+                _this.createOffer()
+            })
+            _this.socket.on("leaved",function(room, id){
+                _this.socket.disconnect();
+		        console.log('receive leaved message');
+            })
+            _this.socket.emit('join',1);
+        },
+        createPeerConnection(){
+            let _this = this
+            console.log("create RTCPeerConnection!")
+            if(!_this.pc){
+                _this.pc = new RTCPeerConnection({
+                    'iceServers': [{
+                        'urls': 'turn:stun.al.learningrtc.cn:3478',
+                        'credential': "mypasswd",
+                        'username': "lichao"
+                    }]
+                })
+                _this.pc.onicecandidate = (e) => {
+                    if(e.candidate){
+                        sendMessage({
+                            type: 'candidate',
+                            label:event.candidate.sdpMLineIndex, 
+                            id:event.candidate.sdpMid, 
+                            candidate: event.candidate.candidate
+                        });
+                    }else{
+                        console.log("this is the end candidate")
+                    }
+                }
+                _this.pc.ontrack = _this.getRemoteStream
+            }
+        },
+        getRemoteStream(e){
+            console.log(e.streams)
+            this.remoteStream = e.streams[0];
+            this.$refs.video.srcObject = e.streams[0]
+        },
+        bindTracks(){
+            let _this = this
+            console.log('bind tracks into RTCPeerConnection')
+            if(_this.pc === null || _this.localStream === null){
+                console.log("not have RTCPeerConnection Object",_this.localStream)
+                return
+            }
+            if(localStream === null || localStream === undefined) {
+                console.error('localstream is null or undefined!')
+                return
+            }
+            this.localStream.getTracks().forEach((track) => {
+                _this.pc.addTrack(track, _this.localStream)  
+            });
+        },
+        createOffer(){
+            let _this = this
+            let offerOptions = {
+                offerToRecieveAudio: 1,
+                offerToRecieveVideo: 1
+            }
+            this.pc.createOffer(offerOptions)
+            .then(_this.getOffer)
+            .catch(_this.handleOfferError)
+        },
+        getOffer(desc){
+           this.pc.setLocalDescription(desc)
+            //    offer.value = desc.sdp;
+           offerdesc = desc;
+           this.sendMessage(desc)
+        },
+        getAnswer(desc){
+           this.pc.setLocalDescription(desc)
+            //    offer.value = desc.sdp;
+           offerdesc = desc;
+           this.sendMessage(desc)
+        },
+        handleOfferError(err){
+            console.log('fail to create Offer', err)
+        },
+        sendMessage(data){
+            if(!this.socket){
+                console.log(" socket is null ")
+                return
+            }
+            this.socket.emit("message", 1, data)
         },
         photoClick(){
             var context = this.$refs.canvas.getContext('2d')
@@ -91,7 +211,7 @@ export default {
                 return;
             }
             try{
-                _this.mediaRecorder = new MediaRecorder(window.stream, options);
+                _this.mediaRecorder = new MediaRecorder(_this.localStream, options);
             }catch(e){
                 console.error('Failed to create MediaRecorder:', e); 
                 return;
